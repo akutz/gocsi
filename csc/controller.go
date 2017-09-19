@@ -7,7 +7,6 @@ import (
 	"html/template"
 	"os"
 	"strconv"
-	"strings"
 	"sync"
 
 	"github.com/codedellemc/gocsi"
@@ -154,21 +153,20 @@ func createVolume(
 		params   = argsCreateVolume.params.vals
 		caps     = []*csi.VolumeCapability{}
 
-		format  = args.format
 		version = args.version
 	)
+
+	// create a template for emitting the output
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
+	}
 
 	// make sure maxEntries doesn't exceed int32
 	if max := argsCreateVolume.mode; max > maxInt32 {
 		return fmt.Errorf("error: max entries > int32: %v", max)
 	}
 	mode = csi.VolumeCapability_AccessMode_Mode(argsCreateVolume.mode)
-
-	// create a template for emitting the output
-	tpl = template.New("template")
-	if tpl, err = tpl.Parse(format); err != nil {
-		return err
-	}
 
 	// initialize the csi client
 	client = csi.NewControllerClient(cc)
@@ -199,27 +197,12 @@ func createVolume(
 ///////////////////////////////////////////////////////////////////////////////
 //                              DeleteVolume                                 //
 ///////////////////////////////////////////////////////////////////////////////
-var argsDeleteVolume struct {
-	volumeMD mapOfStringArg
-}
 
 func flagsDeleteVolume(ctx context.Context, rpc string) *flag.FlagSet {
+
 	fs := flag.NewFlagSet(rpc, flag.ExitOnError)
-	flagsGlobal(fs, "", "")
-
-	fs.Var(
-		&argsDeleteVolume.volumeMD,
-		"metadata",
-		"The metadata of the volume to be deleted.")
-
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
-
+	flagsGlobal(fs, volHandleFormat, "*csi.VolumeHandle")
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 	return fs
 }
 
@@ -229,43 +212,38 @@ func deleteVolume(
 	cc *grpc.ClientConn) error {
 
 	var (
-		client csi.ControllerClient
 		err    error
-
-		volumeMD *csi.VolumeMetadata
-		volumeID = &csi.VolumeID{Values: map[string]string{}}
+		client csi.ControllerClient
+		handle *csi.VolumeHandle
+		tpl    *template.Template
 
 		version = args.version
 	)
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
+	// Create a template for emitting the output.
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
 	}
 
-	// initialize the csi client
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
+	}
+
+	// Initialize a new CSI Controller client.
 	client = csi.NewControllerClient(cc)
 
-	// execute the rpc
-	err = gocsi.DeleteVolume(ctx, client, version, volumeID, volumeMD)
+	// Execute the DeleteVolume RPC.
+	err = gocsi.DeleteVolume(ctx, client, version, handle)
 	if err != nil {
 		return err
 	}
 
-	for k, v := range volumeID.Values {
-		fmt.Print(k)
-		if v != "" {
-			fmt.Printf("=%s", v)
-		}
+	// If the RPC is successful then emit the volume handle.
+	if err = tpl.Execute(os.Stdout, handle); err != nil {
+		return err
 	}
-	fmt.Println()
 
 	return nil
 }
@@ -274,7 +252,6 @@ func deleteVolume(
 //                          ControllerPublishVolume                          //
 ///////////////////////////////////////////////////////////////////////////////
 var argsControllerPublishVolume struct {
-	volumeMD mapOfStringArg
 	nodeID   mapOfStringArg
 	readOnly bool
 	fsType   string
@@ -288,11 +265,6 @@ func flagsControllerPublishVolume(
 
 	fs := flag.NewFlagSet(rpc, flag.ExitOnError)
 	flagsGlobal(fs, mapSzOfSzFormat, "map[string]string")
-
-	fs.Var(
-		&argsControllerPublishVolume.volumeMD,
-		"metadata",
-		"The metadata of the volume to be used on a node.")
 
 	fs.Var(
 		&argsControllerPublishVolume.nodeID,
@@ -329,13 +301,7 @@ func flagsControllerPublishVolume(
 		"o",
 		"The mount flags")
 
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 
 	return fs
 }
@@ -346,40 +312,31 @@ func controllerPublishVolume(
 	cc *grpc.ClientConn) error {
 
 	var (
-		client csi.ControllerClient
-		err    error
-		tpl    *template.Template
-
-		volumeMD   *csi.VolumeMetadata
+		client     csi.ControllerClient
+		err        error
+		tpl        *template.Template
 		nodeID     *csi.NodeID
 		mode       csi.VolumeCapability_AccessMode_Mode
 		capability *csi.VolumeCapability
+		handle     *csi.VolumeHandle
 
 		block    = argsControllerPublishVolume.block
 		fsType   = argsControllerPublishVolume.fsType
 		mntFlags = argsControllerPublishVolume.mntFlags.vals
-		volumeID = &csi.VolumeID{Values: map[string]string{}}
 		readOnly = argsControllerPublishVolume.readOnly
 
-		format  = args.format
 		version = args.version
 	)
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
+	// create a template for emitting the output
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
 	}
 
-	// check for volume metadata
-	if v := argsControllerPublishVolume.volumeMD.vals; len(v) > 0 {
-		volumeMD = &csi.VolumeMetadata{Values: v}
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
 	}
 
 	// check for a node ID
@@ -395,19 +352,13 @@ func controllerPublishVolume(
 		capability = gocsi.NewMountCapability(mode, fsType, mntFlags)
 	}
 
-	// create a template for emitting the output
-	tpl = template.New("template")
-	if tpl, err = tpl.Parse(format); err != nil {
-		return err
-	}
-
 	// initialize the csi client
 	client = csi.NewControllerClient(cc)
 
 	// execute the rpc
 	result, err := gocsi.ControllerPublishVolume(
-		ctx, client, version, volumeID,
-		volumeMD, nodeID, capability, readOnly)
+		ctx, client, version, handle,
+		nodeID, capability, readOnly)
 	if err != nil {
 		return err
 	}
@@ -424,33 +375,21 @@ func controllerPublishVolume(
 //                        ControllerUnpublishVolume                          //
 ///////////////////////////////////////////////////////////////////////////////
 var argsControllerUnpublishVolume struct {
-	volumeMD mapOfStringArg
-	nodeID   mapOfStringArg
+	nodeID mapOfStringArg
 }
 
 func flagsControllerUnpublishVolume(
 	ctx context.Context, rpc string) *flag.FlagSet {
 
 	fs := flag.NewFlagSet(rpc, flag.ExitOnError)
-	flagsGlobal(fs, "", "")
-
-	fs.Var(
-		&argsControllerUnpublishVolume.volumeMD,
-		"metadata",
-		"The metadata of the volume.")
+	flagsGlobal(fs, volHandleFormat, "*csi.VolumeHandle")
 
 	fs.Var(
 		&argsControllerUnpublishVolume.nodeID,
 		"nodeID",
 		"The ID of the node on which the volume is published.")
 
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 
 	return fs
 }
@@ -461,31 +400,24 @@ func controllerUnpublishVolume(
 	cc *grpc.ClientConn) error {
 
 	var (
+		err    error
+		tpl    *template.Template
 		client csi.ControllerClient
-
-		volumeMD *csi.VolumeMetadata
-		nodeID   *csi.NodeID
-
-		volumeID = &csi.VolumeID{Values: map[string]string{}}
+		nodeID *csi.NodeID
+		handle *csi.VolumeHandle
 
 		version = args.version
 	)
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
+	// Create a template for emitting the output.
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
 	}
 
-	// check for volume metadata
-	if v := argsControllerUnpublishVolume.volumeMD.vals; len(v) > 0 {
-		volumeMD = &csi.VolumeMetadata{Values: v}
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
 	}
 
 	// check for a node ID
@@ -497,9 +429,13 @@ func controllerUnpublishVolume(
 	client = csi.NewControllerClient(cc)
 
 	// execute the rpc
-	err := gocsi.ControllerUnpublishVolume(
-		ctx, client, version, volumeID, volumeMD, nodeID)
-	if err != nil {
+	if err = gocsi.ControllerUnpublishVolume(
+		ctx, client, version, handle, nodeID); err != nil {
+		return err
+	}
+
+	// If the RPC is successful then emit the volume handle.
+	if err = tpl.Execute(os.Stdout, handle); err != nil {
 		return err
 	}
 
@@ -546,13 +482,7 @@ func flagsValidateVolumeCapabilities(
 		"o",
 		"The mount flags")
 
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 
 	return fs
 }
@@ -563,20 +493,31 @@ func validateVolumeCapabilities(
 	cc *grpc.ClientConn) error {
 
 	var (
+		err    error
 		client csi.ControllerClient
+		mode   csi.VolumeCapability_AccessMode_Mode
+		handle *csi.VolumeHandle
+		tpl    *template.Template
 
-		mode csi.VolumeCapability_AccessMode_Mode
+		format  = args.format
+		version = args.version
 
 		caps     = []*csi.VolumeCapability{}
-		volumeID = &csi.VolumeID{Values: map[string]string{}}
 		block    = argsValidateVolumeCapabilities.block
 		fsType   = argsValidateVolumeCapabilities.fsType
 		mntFlags = argsValidateVolumeCapabilities.mntFlags.vals
-
-		format  = args.format
-		tpl     *template.Template
-		version = args.version
 	)
+
+	// create a template for emitting the output
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(format); err != nil {
+		return err
+	}
+
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
+	}
 
 	// make sure maxEntries doesn't exceed int32
 	if max := argsValidateVolumeCapabilities.mode; max > maxInt32 {
@@ -584,21 +525,9 @@ func validateVolumeCapabilities(
 	}
 	mode = csi.VolumeCapability_AccessMode_Mode(argsValidateVolumeCapabilities.mode)
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
-	}
-
 	// put the volumeID into a volumeInfo struct
 	info := &csi.VolumeInfo{
-		Id: volumeID,
+		Handle: handle,
 	}
 
 	if block {
@@ -617,15 +546,8 @@ func validateVolumeCapabilities(
 		return err
 	}
 
-	// create a template for emitting the output
-	tpl = template.New("template")
-	if tpl, err = tpl.Parse(format); err != nil {
-		return err
-	}
-
 	// emit the results
-	if err = tpl.Execute(
-		os.Stdout, res); err != nil {
+	if err = tpl.Execute(os.Stdout, res); err != nil {
 		return err
 	}
 
@@ -648,11 +570,11 @@ func flagsListVolumes(ctx context.Context, rpc string) *flag.FlagSet {
 	fs.StringVar(
 		&argsListVolumes.startingToken,
 		"startingToken",
-		os.Getenv("CSI_STARTING_TOKEN"),
+		os.Getenv("X_CSI_STARTING_TOKEN"),
 		"A token to specify where to start paginating")
 
 	var evMaxEntries uint64
-	if v := os.Getenv("CSI_MAX_ENTRIES"); v != "" {
+	if v := os.Getenv("X_CSI_MAX_ENTRIES"); v != "" {
 		i, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
 			fmt.Fprintf(
@@ -699,22 +621,21 @@ func listVolumes(
 
 		chdone        = make(chan int)
 		cherrs        = make(chan error)
-		format        = args.format
 		startingToken = argsListVolumes.startingToken
 		version       = args.version
 	)
+
+	// create a template for emitting the output
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
+	}
 
 	// make sure maxEntries doesn't exceed uint32
 	if max := argsListVolumes.maxEntries; max > maxUint32 {
 		return fmt.Errorf("error: max entries > uint32: %v", max)
 	}
 	maxEntries = uint32(argsListVolumes.maxEntries)
-
-	// create a template for emitting the output
-	tpl = template.New("template")
-	if tpl, err = tpl.Parse(format); err != nil {
-		return err
-	}
 
 	// initialize the csi client
 	client = csi.NewControllerClient(cc)
@@ -880,6 +801,13 @@ func controllerGetCapabilities(
 	fs *flag.FlagSet,
 	cc *grpc.ClientConn) error {
 
+	// create a template for emitting the output
+	var err error
+	tpl := template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
+	}
+
 	// initialize the csi client
 	client := csi.NewControllerClient(cc)
 
@@ -889,11 +817,6 @@ func controllerGetCapabilities(
 		return err
 	}
 
-	// create a template for emitting the output
-	tpl := template.New("template")
-	if tpl, err = tpl.Parse(args.format); err != nil {
-		return err
-	}
 	// emit the results
 	for _, c := range caps {
 		if err = tpl.Execute(

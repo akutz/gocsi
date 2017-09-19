@@ -67,8 +67,7 @@ func NodePublishVolume(
 	ctx context.Context,
 	c csi.NodeClient,
 	version *csi.Version,
-	volumeID *csi.VolumeID,
-	volumeMetadata *csi.VolumeMetadata,
+	volumeHandle *csi.VolumeHandle,
 	publishVolumeInfo *csi.PublishVolumeInfo,
 	targetPath string,
 	volumeCapability *csi.VolumeCapability,
@@ -77,8 +76,7 @@ func NodePublishVolume(
 
 	req := &csi.NodePublishVolumeRequest{
 		Version:           version,
-		VolumeId:          volumeID,
-		VolumeMetadata:    volumeMetadata,
+		VolumeHandle:      volumeHandle,
 		PublishVolumeInfo: publishVolumeInfo,
 		TargetPath:        targetPath,
 		VolumeCapability:  volumeCapability,
@@ -100,16 +98,14 @@ func NodeUnpublishVolume(
 	ctx context.Context,
 	c csi.NodeClient,
 	version *csi.Version,
-	volumeID *csi.VolumeID,
-	volumeMetadata *csi.VolumeMetadata,
+	volumeHandle *csi.VolumeHandle,
 	targetPath string,
 	callOpts ...grpc.CallOption) error {
 
 	req := &csi.NodeUnpublishVolumeRequest{
-		Version:        version,
-		VolumeId:       volumeID,
-		VolumeMetadata: volumeMetadata,
-		TargetPath:     targetPath,
+		Version:      version,
+		VolumeHandle: volumeHandle,
+		TargetPath:   targetPath,
 	}
 
 	_, err := c.NodeUnpublishVolume(ctx, req, callOpts...)

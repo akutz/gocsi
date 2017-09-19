@@ -130,14 +130,12 @@ func DeleteVolume(
 	ctx context.Context,
 	c csi.ControllerClient,
 	version *csi.Version,
-	volumeID *csi.VolumeID,
-	volumeMetadata *csi.VolumeMetadata,
+	volumeHandle *csi.VolumeHandle,
 	callOpts ...grpc.CallOption) error {
 
 	req := &csi.DeleteVolumeRequest{
-		Version:        version,
-		VolumeId:       volumeID,
-		VolumeMetadata: volumeMetadata,
+		Version:      version,
+		VolumeHandle: volumeHandle,
 	}
 
 	_, err := c.DeleteVolume(ctx, req, callOpts...)
@@ -155,8 +153,7 @@ func ControllerPublishVolume(
 	ctx context.Context,
 	c csi.ControllerClient,
 	version *csi.Version,
-	volumeID *csi.VolumeID,
-	volumeMetadata *csi.VolumeMetadata,
+	volumeHandle *csi.VolumeHandle,
 	nodeID *csi.NodeID,
 	volumeCapability *csi.VolumeCapability,
 	readonly bool,
@@ -165,8 +162,7 @@ func ControllerPublishVolume(
 
 	req := &csi.ControllerPublishVolumeRequest{
 		Version:          version,
-		VolumeId:         volumeID,
-		VolumeMetadata:   volumeMetadata,
+		VolumeHandle:     volumeHandle,
 		NodeId:           nodeID,
 		Readonly:         readonly,
 		VolumeCapability: volumeCapability,
@@ -187,16 +183,14 @@ func ControllerUnpublishVolume(
 	ctx context.Context,
 	c csi.ControllerClient,
 	version *csi.Version,
-	volumeID *csi.VolumeID,
-	volumeMetadata *csi.VolumeMetadata,
+	volumeHandle *csi.VolumeHandle,
 	nodeID *csi.NodeID,
 	callOpts ...grpc.CallOption) error {
 
 	req := &csi.ControllerUnpublishVolumeRequest{
-		Version:        version,
-		VolumeId:       volumeID,
-		VolumeMetadata: volumeMetadata,
-		NodeId:         nodeID,
+		Version:      version,
+		VolumeHandle: volumeHandle,
+		NodeId:       nodeID,
 	}
 
 	_, err := c.ControllerUnpublishVolume(ctx, req, callOpts...)

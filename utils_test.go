@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/codedellemc/gocsi"
+	"github.com/codedellemc/gocsi/csi"
 )
 
 var _ = Describe("ParseVersion", func() {
@@ -180,6 +181,88 @@ var _ = Describe("ParseProtoAddr", func() {
 			_, _, err := gocsi.ParseProtoAddr("   ")
 			Ω(err).Should(HaveOccurred())
 			Ω(err).Should(Equal(gocsi.ErrParseProtoAddrRequired))
+		})
+	})
+})
+
+var _ = Describe("ParseVolumeHandle", func() {
+	var (
+		err    error
+		args   []string
+		handle *csi.VolumeHandle
+	)
+	AfterEach(func() {
+		err = nil
+		handle = nil
+	})
+	JustBeforeEach(func() {
+		handle, err = gocsi.ParseVolumeHandle(args...)
+	})
+	shouldBeErrParseVolumeHandleEmptyArgs := func() {
+		Ω(err).Should(HaveOccurred())
+		Ω(err).Should(Equal(gocsi.ErrParseVolumeHandleEmptyArgs))
+		Ω(handle).Should(BeNil())
+	}
+	Context("Nil Variadic", func() {
+		BeforeEach(func() {
+			args = nil
+		})
+		It("Should Be ErrParseVolumeHandleEmptyArgs",
+			shouldBeErrParseVolumeHandleEmptyArgs)
+	})
+	Context("Empty Variadic", func() {
+		BeforeEach(func() {
+			args = []string{}
+		})
+		It("Should Be ErrParseVolumeHandleEmptyArgs",
+			shouldBeErrParseVolumeHandleEmptyArgs)
+	})
+	Context("ID Only", func() {
+		BeforeEach(func() {
+			args = []string{"localhost"}
+		})
+		It("Should Be A Valid VolumeHandle", func() {
+			Ω(err).ShouldNot(HaveOccurred())
+			Ω(handle).ShouldNot(BeNil())
+			Ω(handle.Id).Should(Equal("localhost"))
+			Ω(handle.Metadata).Should(BeNil())
+		})
+	})
+	Context("ID & Single Key=Value Pair", func() {
+		BeforeEach(func() {
+			args = []string{"localhost", "ip=127.0.0.1"}
+		})
+		It("Should Be A Valid VolumeHandle", func() {
+			Ω(err).ShouldNot(HaveOccurred())
+			Ω(handle).ShouldNot(BeNil())
+			Ω(handle.Id).Should(Equal("localhost"))
+			Ω(handle.Metadata).Should(HaveLen(1))
+			Ω(handle.Metadata["ip"]).Should(Equal("127.0.0.1"))
+		})
+	})
+	Context("ID & Single Key=Value Pair Sans Key", func() {
+		BeforeEach(func() {
+			args = []string{"localhost", "online"}
+		})
+		It("Should Be A Valid VolumeHandle", func() {
+			Ω(err).ShouldNot(HaveOccurred())
+			Ω(handle).ShouldNot(BeNil())
+			Ω(handle.Id).Should(Equal("localhost"))
+			Ω(handle.Metadata).Should(HaveLen(1))
+			Ω(handle.Metadata["online"]).Should(Equal(""))
+		})
+	})
+	Context("ID & Multiple Key=Value Pairs", func() {
+		BeforeEach(func() {
+			args = []string{"localhost", "ip=127.0.0.1", "status=online"}
+		})
+		It("Should Be A Valid VolumeHandle", func() {
+			Ω(err).ShouldNot(HaveOccurred())
+			Ω(handle).ShouldNot(BeNil())
+			Ω(handle.Id).Should(Equal("localhost"))
+			Ω(handle.Metadata).Should(HaveLen(2))
+			Ω(handle.Metadata["ip"]).Should(Equal("127.0.0.1"))
+			Ω(handle.Metadata["status"]).Should(Equal("online"))
 		})
 	})
 })

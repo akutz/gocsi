@@ -169,7 +169,7 @@ func newGrpcClient(
 	dialOpts := []grpc.DialOption{
 		grpc.WithUnaryInterceptor(gocsi.ChainUnaryClient(
 			gocsi.ClientCheckReponseError,
-			gocsi.ClientResponseValidator)),
+			gocsi.NewClientResponseValidator())),
 		grpc.WithDialer(
 			func(target string, timeout time.Duration) (net.Conn, error) {
 				proto, addr, err := gocsi.ParseProtoAddr(target)
@@ -187,6 +187,9 @@ func newGrpcClient(
 	return grpc.DialContext(ctx, endpoint, dialOpts...)
 }
 
+const idMDKeyMDVal = "ID [METADATA_KEY[=METADATA_VAL] " +
+	"[[METADATA_KEY[=METADATA_VAL]...]"
+
 ///////////////////////////////////////////////////////////////////////////////
 //                            Default Formats                                //
 ///////////////////////////////////////////////////////////////////////////////
@@ -196,29 +199,34 @@ func newGrpcClient(
 const mapSzOfSzFormat = `{{range $k, $v := .}}` +
 	`{{printf "%s=%s\t" $k $v}}{{end}}{{"\n"}}`
 
+// volHandleFormat is the default Go template format for
+// emitting a *csi.VolumeHandle
+const volHandleFormat = `{{.Id}}{{"\t"}}` +
+	`{{range $k, $v := .Metadata}}` +
+	`{{printf "%s=%s\t" $k $v}}{{end}}{{"\n"}}`
+
 // volumeInfoFormat is the default Go template format for
 // emitting a *csi.VolumeInfo
-const volumeInfoFormat = `{{with .GetId}}{{range $k, $v := .GetValues}}` +
-	`{{printf "%s=%s\t" $k $v}}{{end}}{{end}}{{"\n"}}`
+const volumeInfoFormat = `{{printf "%s\t" .Handle.Id}}` +
+	`{{range $k, $v := .Handle.Metadata}}` +
+	`{{printf "%s=%s\t" $k $v}}` +
+	`{{end}}{{"\n"}}`
 
 // versionFormat is the default Go template format for emitting a *csi.Version
-const versionFormat = `{{.GetMajor}}.{{.GetMinor}}.{{.GetPatch}}{{"\n"}}`
+const versionFormat = `{{printf "%d.%d.%d\n" .Major .Minor. Patch}}`
 
 // pluginInfoFormat is the default Go template format for
 // emitting a *csi.GetPluginInfoResponse_Result
-const pluginInfoFormat = `{{.Name}}{{print "\t"}}{{.VendorVersion}}{{print "\t"}}` +
-	`{{with .GetManifest}}{{range $k, $v := .}}` +
-	`{{printf "%s=%s\t" $k $v}}{{end}}{{end}}{{"\n"}}`
+const pluginInfoFormat = `{{printf "%s\t%s\t" .Name .VendorVersion}}` +
+	`{{range $k, $v := .Manifest}}{{printf "%s=%s\t" $k $v}}{{end}}{{"\n"}}`
 
 // capFormat is the default Go template for emitting a
 // *csi.{Controller,Node}ServiceCapability
-const capFormat = `{{with .GetRpc}}{{.Type}}{{end}}{{"\n"}}`
+const capFormat = `{{printf "%s\n" .GetRpc.Type}}`
 
 // valCapFormat is the default Go tempate for emitting a
 // *csi.ValidateVolumeCapabilitiesResponse_Result
-const valCapFormat = `{{with .GetSupported}}{{print "supported: "}}{{.}}` +
-	`{{print "\n"}}{{end}}{{with .GetMessage}}{{print "\tmessage: "}}` +
-	`{{.}}{{end}}{{"\n"}}`
+const valCapFormat = `{{printf "%v\t%s\n" .Supported .Message}}`
 
 ///////////////////////////////////////////////////////////////////////////////
 //                                Commands                                   //
@@ -295,7 +303,7 @@ func flagsGlobal(
 		"The name of the CSD service to use.")
 
 	version := defaultVersion
-	if v := os.Getenv("CSI_VERSION"); v != "" {
+	if v := os.Getenv("X_CSI_VERSION"); v != "" {
 		version = v
 	}
 	fs.StringVar(
@@ -305,7 +313,7 @@ func flagsGlobal(
 		"The API version string")
 
 	insecure := true
-	if v := os.Getenv("CSI_INSECURE"); v != "" {
+	if v := os.Getenv("X_CSI_INSECURE"); v != "" {
 		insecure, _ = strconv.ParseBool(v)
 	}
 	fs.BoolVar(
@@ -367,4 +375,27 @@ func (s *mapOfStringArg) Set(val string) error {
 		}
 	}
 	return nil
+}
+
+func newVolumeRPCUsage(rpc string, fs *flag.FlagSet) func() {
+	return func() {
+		fmt.Fprintf(
+			os.Stderr,
+			"usage: %s %s [ARGS...] %s \n",
+			appName, rpc, idMDKeyMDVal)
+		fs.PrintDefaults()
+	}
+}
+
+func parseVolumeHandle(fs *flag.FlagSet) (*csi.VolumeHandle, error) {
+	if fs.NArg() == 0 {
+		return gocsi.ParseVolumeHandle()
+	}
+
+	args := make([]string, fs.NArg())
+	for i := 0; i < fs.NArg(); i++ {
+		args[i] = fs.Arg(i)
+	}
+
+	return gocsi.ParseVolumeHandle(args...)
 }

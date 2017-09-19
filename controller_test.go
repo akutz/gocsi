@@ -78,10 +78,10 @@ var _ = Describe("Controller", func() {
 		Ω(err).ShouldNot(HaveOccurred())
 		Ω(vol).ShouldNot(BeNil())
 		Ω(vol.CapacityBytes).Should(Equal(limBytes))
-		Ω(vol.Id).ShouldNot(BeNil())
-		Ω(vol.Id.Values).ShouldNot(BeNil())
-		Ω(vol.Id.Values).ShouldNot(HaveLen(0))
-		Ω(vol.Id.Values["name"]).Should(Equal(volName))
+		Ω(vol.Handle).ShouldNot(BeNil())
+		Ω(vol.Handle.Id).ShouldNot(BeEmpty())
+		Ω(vol.Handle.Metadata).ShouldNot(BeNil())
+		Ω(vol.Handle.Metadata["name"]).Should(Equal(volName))
 	}
 
 	Describe("CreateVolume", func() {
@@ -99,10 +99,10 @@ var _ = Describe("Controller", func() {
 				Ω(err).ShouldNot(HaveOccurred())
 				Ω(vol).ShouldNot(BeNil())
 				Ω(vol.CapacityBytes).Should(Equal(reqBytes))
-				Ω(vol.Id).ShouldNot(BeNil())
-				Ω(vol.Id.Values).ShouldNot(BeNil())
-				Ω(vol.Id.Values).ShouldNot(HaveLen(0))
-				Ω(vol.Id.Values["name"]).Should(Equal(volName))
+				Ω(vol.Handle).ShouldNot(BeNil())
+				Ω(vol.Handle.Id).ShouldNot(BeEmpty())
+				Ω(vol.Handle.Metadata).ShouldNot(BeNil())
+				Ω(vol.Handle.Metadata["name"]).Should(Equal(volName))
 			})
 		})
 		Context("Missing Name", func() {
@@ -157,24 +157,22 @@ var _ = Describe("Controller", func() {
 	})
 
 	Describe("DeleteVolume", func() {
-		var volID *csi.VolumeID
+		var handle *csi.VolumeHandle
 		BeforeEach(func() {
-			volID = &csi.VolumeID{
-				Values: map[string]string{
-					"id": CTest().ComponentTexts[2],
-				},
+			handle = &csi.VolumeHandle{
+				Id:       CTest().ComponentTexts[2],
+				Metadata: map[string]string{},
 			}
 		})
 		AfterEach(func() {
-			volID = nil
+			handle = nil
 		})
 		JustBeforeEach(func() {
 			err = gocsi.DeleteVolume(
 				ctx,
 				client,
 				version,
-				volID,
-				&csi.VolumeMetadata{Values: map[string]string{}})
+				handle)
 		})
 		Context("0", func() {
 			It("Should Be Valid", func() {
@@ -193,7 +191,7 @@ var _ = Describe("Controller", func() {
 		})
 		Context("Missing Volume ID", func() {
 			BeforeEach(func() {
-				volID = nil
+				handle = nil
 			})
 			It("Should Not Be Valid", func() {
 				Ω(err).Should(HaveOccurred())

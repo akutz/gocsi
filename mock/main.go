@@ -135,7 +135,7 @@ func newGrpcServer() *grpc.Server {
 		gocsi.NewServerRequestLogger(lout, lerr),
 		gocsi.NewServerResponseLogger(lout, lerr),
 		gocsi.NewServerRequestVersionValidator(supportedVersions),
-		gocsi.ServerRequestValidator)))
+		gocsi.NewServerRequestValidator())))
 }
 
 // ServiceProvider.Serve
@@ -204,29 +204,28 @@ func (s *sp) CreateVolume(
 	req *csi.CreateVolumeRequest) (
 	*csi.CreateVolumeResponse, error) {
 
-	s.Lock()
-	defer s.Unlock()
+	// New volumes have a default capacity of 100GiB
+	capacity := gib100
 
-	// the creation process is idempotent: if the volume
-	// does not already exist then create it, otherwise
-	// just return the existing volume
-	name := req.Name
-	_, v := findVolByName(name)
-	if v == nil {
-		capacity := gib100
-		if cr := req.CapacityRange; cr != nil {
-			if rb := cr.RequiredBytes; rb > 0 {
-				capacity = rb
-			}
-			if lb := cr.LimitBytes; lb > 0 {
-				capacity = lb
-			}
+	// If the request specifies a capacity then use that.
+	if cr := req.CapacityRange; cr != nil {
+		if rb := cr.RequiredBytes; rb > 0 {
+			capacity = rb
 		}
-		v = newVolume(name, capacity)
-		vols = append(vols, v)
+		if lb := cr.LimitBytes; lb > 0 {
+			capacity = lb
+		}
 	}
 
-	louti.Printf("Volume.ID=%s\n", v.Id.Values["id"])
+	// Create the volume.
+	v := newVolume(req.Name, capacity)
+
+	// Append the new volume to the global list of volumes.
+	func() {
+		volsRWL.Lock()
+		defer volsRWL.Unlock()
+		vols = append(vols, v)
+	}()
 
 	return &csi.CreateVolumeResponse{
 		Reply: &csi.CreateVolumeResponse_Result_{
@@ -242,24 +241,19 @@ func (s *sp) DeleteVolume(
 	req *csi.DeleteVolumeRequest) (
 	*csi.DeleteVolumeResponse, error) {
 
-	id, ok := req.VolumeId.Values["id"]
-	if !ok {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrDeleteVolume(3, "missing id val"), nil
-	}
+	// Find the volume's index in the global volume list.
+	x, _ := findVol(req.VolumeHandle)
 
-	s.Lock()
-	defer s.Unlock()
-
-	x, v := findVol("id", id)
-	if v != nil {
-		// this delete logic won't preserve order,
-		// but it will prevent any potential mem
-		// leaks due to orphaned references
+	// This delete logic won't preserve order,
+	// but it will prevent any potential mem
+	// leaks due to orphaned references
+	func() {
+		volsRWL.Lock()
+		defer volsRWL.Unlock()
 		vols[x] = vols[len(vols)-1]
 		vols[len(vols)-1] = nil
 		vols = vols[:len(vols)-1]
-	}
+	}()
 
 	return &csi.DeleteVolumeResponse{
 		Reply: &csi.DeleteVolumeResponse_Result_{
@@ -273,66 +267,37 @@ func (s *sp) ControllerPublishVolume(
 	req *csi.ControllerPublishVolumeRequest) (
 	*csi.ControllerPublishVolumeResponse, error) {
 
-	idObj := req.GetVolumeId()
-	if idObj == nil {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerPublishVolume(3, "missing id obj"), nil
+	if req.NodeId == nil {
+		return gocsi.ErrControllerPublishVolume(
+			csi.Error_ControllerPublishVolumeError_INVALID_NODE_ID,
+			"nil node id"), nil
 	}
 
-	idVals := idObj.GetValues()
-	if len(idVals) == 0 {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerPublishVolume(3, "missing id map"), nil
-	}
-
-	id, ok := idVals["id"]
+	nodeID, ok := req.NodeId.Values["id"]
 	if !ok {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerPublishVolume(3, "missing id val"), nil
+		return gocsi.ErrControllerPublishVolume(
+			csi.Error_ControllerPublishVolumeError_INVALID_NODE_ID,
+			"missing node id"), nil
 	}
 
-	nid := req.GetNodeId()
-	if nid == nil {
-		// INVALID_NODE_ID
-		return gocsi.ErrControllerPublishVolume(7, "missing node id"), nil
-	}
-
-	nidv := nid.GetValues()
-	if len(nidv) == 0 {
-		// INVALID_NODE_ID
-		return gocsi.ErrControllerPublishVolume(7, "missing node id"), nil
-	}
-
-	nidid, ok := nidv["id"]
-	if !ok {
-		// INVALID_NODE_ID
-		return gocsi.ErrControllerPublishVolume(7, "node id required"), nil
-	}
-
-	// the key used with the volume's metadata to see if the volume
+	// The key used with the volume's metadata to see if the volume
 	// is attached to a given node id
-	attk := fmt.Sprintf("devpath.%s", nidid)
+	attk := fmt.Sprintf("devpath.%s", nodeID)
 
-	s.Lock()
-	defer s.Unlock()
-
-	_, v := findVol("id", id)
-	if v == nil {
-		// VOLUME_DOES_NOT_EXIST
-		return gocsi.ErrControllerPublishVolume(5, "missing volume"), nil
-	}
+	// Get the volume from the global list.
+	_, v := findVol(req.VolumeHandle)
 
 	// a "new" device path
 	var devpath string
 
-	// check to see if the volume is attached to this nods. if it
+	// Check to see if the volume is attached to this nods. if it
 	// is then return the existing dev path
-	if p, ok := v.Metadata.Values[attk]; ok {
+	if p, ok := v.Handle.Metadata[attk]; ok {
 		devpath = p
 	} else {
-		// attach the volume
+		// Attach the volume
 		devpath = fmt.Sprintf("%d", time.Now().UTC().Unix())
-		v.Metadata.Values[attk] = devpath
+		v.Handle.Metadata[attk] = devpath
 	}
 
 	resp := &csi.ControllerPublishVolumeResponse{
@@ -347,7 +312,6 @@ func (s *sp) ControllerPublishVolume(
 		},
 	}
 
-	louti.Printf("mock.ControllerPublishVolume.Response=%+v\n", resp)
 	return resp, nil
 }
 
@@ -356,63 +320,35 @@ func (s *sp) ControllerUnpublishVolume(
 	req *csi.ControllerUnpublishVolumeRequest) (
 	*csi.ControllerUnpublishVolumeResponse, error) {
 
-	idObj := req.GetVolumeId()
-	if idObj == nil {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerUnpublishVolume(3, "missing id obj"), nil
+	if req.NodeId == nil {
+		return gocsi.ErrControllerUnpublishVolume(
+			csi.Error_ControllerUnpublishVolumeError_INVALID_NODE_ID,
+			"nil node id"), nil
 	}
 
-	idVals := idObj.GetValues()
-	if len(idVals) == 0 {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerUnpublishVolume(3, "missing id map"), nil
-	}
-
-	id, ok := idVals["id"]
+	nodeID, ok := req.NodeId.Values["id"]
 	if !ok {
-		// INVALID_VOLUME_ID
-		return gocsi.ErrControllerUnpublishVolume(3, "missing id val"), nil
+		return gocsi.ErrControllerUnpublishVolume(
+			csi.Error_ControllerUnpublishVolumeError_INVALID_NODE_ID,
+			"missing node id"), nil
 	}
 
-	nid := req.GetNodeId()
-	if nid == nil {
-		// INVALID_NODE_ID
-		return gocsi.ErrControllerUnpublishVolume(7, "missing node id"), nil
-	}
-
-	nidv := nid.GetValues()
-	if len(nidv) == 0 {
-		// INVALID_NODE_ID
-		return gocsi.ErrControllerUnpublishVolume(7, "missing node id"), nil
-	}
-
-	nidid, ok := nidv["id"]
-	if !ok {
-		// NODE_ID_REQUIRED
-		return gocsi.ErrControllerUnpublishVolume(9, "node id required"), nil
-	}
-
-	// the key used with the volume's metadata to see if the volume
+	// The key used with the volume's metadata to see if the volume
 	// is attached to a given node id
-	attk := fmt.Sprintf("devpath.%s", nidid)
+	attk := fmt.Sprintf("devpath.%s", nodeID)
 
-	s.Lock()
-	defer s.Unlock()
+	// Get the volume from the global list.
+	_, v := findVol(req.VolumeHandle)
 
-	_, v := findVol("id", id)
-	if v == nil {
-		// VOLUME_DOES_NOT_EXIST
-		return gocsi.ErrControllerUnpublishVolume(5, "missing volume"), nil
+	// Check to see if the volume is attached to thi node
+	if _, ok := v.Handle.Metadata[attk]; !ok {
+		return gocsi.ErrControllerUnpublishVolume(
+			csi.Error_ControllerUnpublishVolumeError_VOLUME_NOT_ATTACHED_TO_SPECIFIED_NODE,
+			"not attached"), nil
 	}
 
-	// check to see if the volume is attached to thi node
-	if _, ok := v.Metadata.Values[attk]; !ok {
-		// VOLUME_NOT_ATTACHED_TO_SPECIFIED_NODE
-		return gocsi.ErrControllerUnpublishVolume(8, "not attached"), nil
-	}
-
-	// zero out the device path for this node
-	delete(v.Metadata.Values, attk)
+	// Zero out the device path for this node
+	delete(v.Handle.Metadata, attk)
 
 	return &csi.ControllerUnpublishVolumeResponse{
 		Reply: &csi.ControllerUnpublishVolumeResponse_Result_{
@@ -441,16 +377,13 @@ func (s *sp) ListVolumes(
 	req *csi.ListVolumesRequest) (
 	*csi.ListVolumesResponse, error) {
 
-	s.Lock()
-	defer s.Unlock()
-
 	var (
 		ulenVols      = uint32(len(vols))
 		maxEntries    = uint32(req.GetMaxEntries())
 		startingToken uint32
 	)
 
-	if v := req.GetStartingToken(); v != "" {
+	if v := req.StartingToken; v != "" {
 		i, err := strconv.ParseUint(v, 10, 32)
 		if err != nil {
 			return gocsi.ErrListVolumes(0, fmt.Sprintf(
@@ -473,7 +406,6 @@ func (s *sp) ListVolumes(
 			break
 		}
 		v := vols[x]
-		louti.Printf("Volume.ID=%s\n", v.Id.Values["id"])
 		entries = append(entries,
 			&csi.ListVolumesResponse_Result_Entry{VolumeInfo: v})
 		lena++
@@ -482,7 +414,6 @@ func (s *sp) ListVolumes(
 	var nextToken string
 	if (startingToken + lena) < ulenVols {
 		nextToken = fmt.Sprintf("%d", startingToken+lena)
-		fmt.Printf("nextToken=%s\n", nextToken)
 	}
 
 	return &csi.ListVolumesResponse{
@@ -622,41 +553,10 @@ func (s *sp) NodePublishVolume(
 	req *csi.NodePublishVolumeRequest) (
 	*csi.NodePublishVolumeResponse, error) {
 
-	idObj := req.GetVolumeId()
-	if idObj == nil {
-		// MISSING_REQUIRED_FIELD
-		return gocsi.ErrNodePublishVolumeGeneral(3, "missing id obj"), nil
-	}
-
-	idVals := idObj.GetValues()
-	if len(idVals) == 0 {
-		// MISSING_REQUIRED_FIELD
-		return gocsi.ErrNodePublishVolumeGeneral(3, "missing id map"), nil
-	}
-
-	id, ok := idVals["id"]
-	if !ok {
-		// MISSING_REQUIRED_FIELD
-		return gocsi.ErrNodePublishVolumeGeneral(3, "missing id val"), nil
-	}
-
-	s.Lock()
-	defer s.Unlock()
-
-	_, v := findVol("id", id)
-	if v == nil {
-		// VOLUME_DOES_NOT_EXIST
-		return gocsi.ErrNodePublishVolume(2, "missing volume"), nil
-	}
-
-	mntpath := req.GetTargetPath()
-	if mntpath == "" {
-		// UNSUPPORTED_MOUNT_OPTION
-		return gocsi.ErrNodePublishVolume(3, "missing mount path"), nil
-	}
+	_, v := findVol(req.VolumeHandle)
 
 	// record the mount path
-	v.Metadata.Values[nodeMntpath] = mntpath
+	v.Handle.Metadata[nodeMntpath] = req.TargetPath
 
 	return &csi.NodePublishVolumeResponse{
 		Reply: &csi.NodePublishVolumeResponse_Result_{
@@ -670,35 +570,10 @@ func (s *sp) NodeUnpublishVolume(
 	req *csi.NodeUnpublishVolumeRequest) (
 	*csi.NodeUnpublishVolumeResponse, error) {
 
-	idObj := req.GetVolumeId()
-	if idObj == nil {
-		// MISSING_REQUIRED_FIELD
-		return gocsi.ErrNodeUnpublishVolumeGeneral(3, "missing id obj"), nil
-	}
-
-	idVals := idObj.GetValues()
-	if len(idVals) == 0 {
-		// MISSING_REQUIRED_FIELD
-		return gocsi.ErrNodeUnpublishVolumeGeneral(3, "missing id map"), nil
-	}
-
-	s.Lock()
-	defer s.Unlock()
-
-	id, ok := idVals["id"]
-	if !ok {
-		// VOLUME_DOES_NOT_EXIST
-		return gocsi.ErrNodeUnpublishVolume(2, "missing id val"), nil
-	}
-
-	_, v := findVol("id", id)
-	if v == nil {
-		// VOLUME_DOES_NOT_EXIST
-		return gocsi.ErrNodeUnpublishVolume(2, "missing volume"), nil
-	}
+	_, v := findVol(req.VolumeHandle)
 
 	// zero out the mount path for this node
-	delete(v.Metadata.Values, nodeMntpath)
+	delete(v.Handle.Metadata, nodeMntpath)
 
 	return &csi.NodeUnpublishVolumeResponse{
 		Reply: &csi.NodeUnpublishVolumeResponse_Result_{
@@ -781,6 +656,8 @@ var (
 		newVolume("Mock Volume 3", gib100),
 	}
 
+	volsRWL sync.RWMutex
+
 	nodeID = &csi.NodeID{
 		Values: map[string]string{
 			"id": nodeIDID,
@@ -791,54 +668,60 @@ var (
 )
 
 func newVolume(name string, capcity uint64) *csi.VolumeInfo {
-	id := atomic.AddUint64(&nextVolID, 1)
-	vi := &csi.VolumeInfo{
-		Id: &csi.VolumeID{
-			Values: map[string]string{
-				"id":   fmt.Sprintf("%d", id),
+	return &csi.VolumeInfo{
+		Handle: &csi.VolumeHandle{
+			Id: fmt.Sprintf("%d", atomic.AddUint64(&nextVolID, 1)),
+			Metadata: map[string]string{
 				"name": name,
 			},
 		},
-		Metadata: &csi.VolumeMetadata{
-			Values: map[string]string{},
-		},
 		CapacityBytes: capcity,
 	}
-	return vi
 }
 
-func findVolByID(id *csi.VolumeID) (int, *csi.VolumeInfo) {
-	if id == nil || len(id.Values) == 0 {
+func findVol(h *csi.VolumeHandle) (int, *csi.VolumeInfo) {
+	volsRWL.RLock()
+	defer volsRWL.RUnlock()
+
+	if h == nil {
 		return -1, nil
 	}
-	if idv, ok := id.Values["id"]; ok {
-		return findVol("id", idv)
+	if h.Id != "" {
+		return findVolByID(h.Id)
 	}
-	if idv, ok := id.Values["name"]; ok {
-		return findVol("name", idv)
+	if len(h.Metadata) == 0 {
+		return -1, nil
+	}
+	if n, ok := h.Metadata["name"]; ok {
+		return findVolByName(n)
 	}
 	return -1, nil
 }
 
-func findVolByName(name string) (int, *csi.VolumeInfo) {
-	return findVol("name", name)
+func findVolByID(id string) (int, *csi.VolumeInfo) {
+	return findVolByField("id", id)
 }
 
-func findVol(field, val string) (int, *csi.VolumeInfo) {
+func findVolByName(name string) (int, *csi.VolumeInfo) {
+	return findVolByField("name", name)
+}
+
+func findVolByField(field, val string) (int, *csi.VolumeInfo) {
 	for x, v := range vols {
-		id := v.Id
-		if id == nil {
+		h := v.Handle
+		if h == nil {
 			continue
 		}
-		if len(id.Values) == 0 {
-			continue
-		}
-		fv, ok := id.Values[field]
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(fv, val) {
-			return x, v
+		switch field {
+		case "id":
+			if strings.EqualFold(val, h.Id) {
+				return x, v
+			}
+		case "name":
+			n, ok := h.Metadata["name"]
+			if ok && strings.EqualFold(val, n) {
+				return x, v
+			}
 		}
 	}
 	return -1, nil

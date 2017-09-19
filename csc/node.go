@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"html/template"
 	"os"
-	"strings"
 
 	"github.com/codedellemc/gocsi"
 	"github.com/codedellemc/gocsi/csi"
@@ -50,7 +49,6 @@ var nodeCmds = []*cmd{
 //                            NodePublishVolume                              //
 ///////////////////////////////////////////////////////////////////////////////
 var argsNodePublishVolume struct {
-	volumeMD          mapOfStringArg
 	publishVolumeInfo mapOfStringArg
 	targetPath        string
 	fsType            string
@@ -65,11 +63,6 @@ func flagsNodePublishVolume(
 
 	fs := flag.NewFlagSet(rpc, flag.ExitOnError)
 	flagsGlobal(fs, "", "")
-
-	fs.Var(
-		&argsNodePublishVolume.volumeMD,
-		"metadata",
-		"The metadata of the volume to be used on a node.")
 
 	fs.Var(
 		&argsNodePublishVolume.publishVolumeInfo,
@@ -112,13 +105,7 @@ func flagsNodePublishVolume(
 		"A flag indicating whether or not to "+
 			"publish the volume in read-only mode.")
 
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 
 	return fs
 }
@@ -129,9 +116,10 @@ func nodePublishVolume(
 	cc *grpc.ClientConn) error {
 
 	var (
+		err    error
 		client csi.NodeClient
 
-		volumeMD   *csi.VolumeMetadata
+		handle     *csi.VolumeHandle
 		pubVolInfo *csi.PublishVolumeInfo
 		mode       csi.VolumeCapability_AccessMode_Mode
 		capability *csi.VolumeCapability
@@ -140,12 +128,16 @@ func nodePublishVolume(
 		fsType   = argsNodePublishVolume.fsType
 		mntFlags = argsNodePublishVolume.mntFlags.vals
 
-		volumeID   = &csi.VolumeID{Values: map[string]string{}}
 		targetPath = argsNodePublishVolume.targetPath
 		readOnly   = argsNodePublishVolume.readOnly
 
 		version = args.version
 	)
+
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
+	}
 
 	// make sure maxEntries doesn't exceed int32
 	if max := argsNodePublishVolume.mode; max > maxInt32 {
@@ -159,23 +151,6 @@ func nodePublishVolume(
 		capability = gocsi.NewMountCapability(mode, fsType, mntFlags)
 	}
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
-	}
-
-	// check for volume metadata
-	if v := argsNodePublishVolume.volumeMD.vals; len(v) > 0 {
-		volumeMD = &csi.VolumeMetadata{Values: v}
-	}
-
 	// check for publish volume info
 	if v := argsNodePublishVolume.publishVolumeInfo.vals; len(v) > 0 {
 		pubVolInfo = &csi.PublishVolumeInfo{Values: v}
@@ -185,13 +160,13 @@ func nodePublishVolume(
 	client = csi.NewNodeClient(cc)
 
 	// execute the rpc
-	err := gocsi.NodePublishVolume(
-		ctx, client, version, volumeID,
-		volumeMD, pubVolInfo, targetPath,
-		capability, readOnly)
-	if err != nil {
+	if err = gocsi.NodePublishVolume(
+		ctx, client, version, handle,
+		pubVolInfo, targetPath, capability, readOnly); err != nil {
 		return err
 	}
+
+	fmt.Println(targetPath)
 
 	return nil
 }
@@ -200,7 +175,6 @@ func nodePublishVolume(
 //                           NodeUnpublishVolume                             //
 ///////////////////////////////////////////////////////////////////////////////
 var argsNodeUnpublishVolume struct {
-	volumeMD   mapOfStringArg
 	targetPath string
 }
 
@@ -208,12 +182,7 @@ func flagsNodeUnpublishVolume(
 	ctx context.Context, rpc string) *flag.FlagSet {
 
 	fs := flag.NewFlagSet(rpc, flag.ExitOnError)
-	flagsGlobal(fs, "", "")
-
-	fs.Var(
-		&argsNodeUnpublishVolume.volumeMD,
-		"metadata",
-		"The metadata of the volume to be used on a node.")
+	flagsGlobal(fs, volHandleFormat, "*csi.VolumeHandle")
 
 	fs.StringVar(
 		&argsNodeUnpublishVolume.targetPath,
@@ -221,13 +190,7 @@ func flagsNodeUnpublishVolume(
 		"",
 		"The path to which the volume is published.")
 
-	fs.Usage = func() {
-		fmt.Fprintf(
-			os.Stderr,
-			"usage: %s %s [ARGS...] ID_KEY[=ID_VAL] [ID_KEY[=ID_VAL]...]\n",
-			appName, rpc)
-		fs.PrintDefaults()
-	}
+	fs.Usage = newVolumeRPCUsage(rpc, fs)
 	return fs
 }
 
@@ -237,41 +200,38 @@ func nodeUnpublishVolume(
 	cc *grpc.ClientConn) error {
 
 	var (
+		err    error
 		client csi.NodeClient
+		handle *csi.VolumeHandle
+		tpl    *template.Template
 
-		volumeMD *csi.VolumeMetadata
-
-		volumeID   = &csi.VolumeID{Values: map[string]string{}}
 		targetPath = argsNodeUnpublishVolume.targetPath
 
 		version = args.version
 	)
 
-	// parse the volume ID into a map
-	for x := 0; x < fs.NArg(); x++ {
-		a := fs.Arg(x)
-		kv := strings.SplitN(a, "=", 2)
-		switch len(kv) {
-		case 1:
-			volumeID.Values[kv[0]] = ""
-		case 2:
-			volumeID.Values[kv[0]] = kv[1]
-		}
+	// Create a template for emitting the output.
+	tpl = template.New("template")
+	if tpl, err = tpl.Parse(args.format); err != nil {
+		return err
 	}
 
-	// check for volume metadata
-	if v := argsNodeUnpublishVolume.volumeMD.vals; len(v) > 0 {
-		volumeMD = &csi.VolumeMetadata{Values: v}
+	// Parse the VolumeHandle from the remaining CLI args.
+	if handle, err = parseVolumeHandle(fs); err != nil {
+		return err
 	}
 
 	// initialize the csi client
 	client = csi.NewNodeClient(cc)
 
 	// execute the rpc
-	err := gocsi.NodeUnpublishVolume(
-		ctx, client, version, volumeID,
-		volumeMD, targetPath)
-	if err != nil {
+	if err := gocsi.NodeUnpublishVolume(
+		ctx, client, version, handle, targetPath); err != nil {
+		return err
+	}
+
+	// If the RPC is successful then emit the volume handle.
+	if err = tpl.Execute(os.Stdout, handle); err != nil {
 		return err
 	}
 

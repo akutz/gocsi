@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/codedellemc/gocsi/csi"
 )
@@ -169,4 +170,42 @@ func ParseProtoAddr(protoAddr string) (proto string, addr string, err error) {
 		return "", "", fmt.Errorf("invalid network address: %s", protoAddr)
 	}
 	return m[1], m[2], nil
+}
+
+// ErrParseVolumeHandleEmptyArgs is returned from ParseVolumeHandle function
+// if an empty arguments list is provided.
+var ErrParseVolumeHandleEmptyArgs = errors.New("ParseVolumeHandle: empty args")
+
+// ParseVolumeHandle attempts to parse a volume handle from one or more
+// string values. The first value is treated as the handle's ID field and
+// any remaining arguments are treated as key=value pairs and added to the
+// handle's metadata.
+func ParseVolumeHandle(args ...string) (*csi.VolumeHandle, error) {
+	if len(args) == 0 {
+		return nil, ErrParseVolumeHandleEmptyArgs
+	}
+
+	// Create the volume handle using the first argument as the ID.
+	handle := &csi.VolumeHandle{
+		Id:       args[0],
+		Metadata: map[string]string{},
+	}
+
+	// Range over any remaining arguments as potential pieces of metadata.
+	for _, a := range args[1:] {
+		kvpair := strings.Split(a, "=")
+		switch len(kvpair) {
+		case 1:
+			handle.Metadata[kvpair[0]] = ""
+		case 2:
+			handle.Metadata[kvpair[0]] = kvpair[1]
+		}
+	}
+
+	// If there is no metadata then remove the empty map from the handle.
+	if len(handle.Metadata) == 0 {
+		handle.Metadata = nil
+	}
+
+	return handle, nil
 }

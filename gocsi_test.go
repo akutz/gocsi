@@ -218,7 +218,7 @@ func newGrpcClient(
 		grpc.WithInsecure(),
 		grpc.WithUnaryInterceptor(gocsi.ChainUnaryClient(
 			gocsi.ClientCheckReponseError,
-			gocsi.ClientResponseValidator)),
+			gocsi.NewClientResponseValidator())),
 		grpc.WithDialer(
 			func(target string, timeout time.Duration) (net.Conn, error) {
 				proto, addr, err := gocsi.ParseProtoAddr(target)

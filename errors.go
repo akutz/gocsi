@@ -74,9 +74,6 @@ func (e *Error) ErrorMethod() string {
 	return parts[len(parts)-1]
 }
 
-// ErrEmptyServices occurs when a Server's Services list is empty.
-var ErrEmptyServices = errors.New("services list is empty")
-
 // ErrMissingCSIEndpoint occurs when the value for the environment
 // variable CSI_ENDPOINT is not set.
 var ErrMissingCSIEndpoint = errors.New("missing CSI_ENDPOINT")
@@ -84,9 +81,17 @@ var ErrMissingCSIEndpoint = errors.New("missing CSI_ENDPOINT")
 // ErrNilVolumeInfo occurs when a gRPC call returns a nil VolumeInfo.
 var ErrNilVolumeInfo = errors.New("volumeInfo is nil")
 
-// ErrNilVolumeID occurs when a gRPC call returns a VolumeInfo with
-// a nil Id field.
-var ErrNilVolumeID = errors.New("volumeInfo.Id is nil")
+// ErrNilVolumeHandle occurs when a gRPC call returns a VolumeInfo with
+// a nil VolumeHandle field.
+var ErrNilVolumeHandle = errors.New("volume handle is nil")
+
+// ErrEmptyVolumeID occurs when a gRPC call returns a VolumeHandle with
+// an empty Id field.
+var ErrEmptyVolumeID = errors.New("volume id is empty")
+
+// ErrNonNilEmptyMetadata occurs when a VolumeHandle has non-nil, empty
+// metadata.
+var ErrNonNilEmptyMetadata = errors.New("non-nil, empty metadata")
 
 // ErrNilPublishVolumeInfo occurs when a gRPC call returns
 // a nil PublishVolumeInfo.
@@ -100,35 +105,8 @@ var ErrEmptyPublishVolumeInfo = errors.New("publishVolumeInfo is empty")
 // a nil NodeID.
 var ErrNilNodeID = errors.New("nodeID is nil")
 
-// ErrNilSupportedVersions occurs when a gRPC call returns nil SupportedVersions
-var ErrNilSupportedVersions = errors.New("supportedVersions is nil")
-
-// ErrVersionRequired occurs when an RPC call is made with a nil
-// version argument.
-var ErrVersionRequired = errors.New("version is required")
-
-// ErrVolumeIDRequired occurs when an RPC call is made with a nil
-// volumeID argument.
-var ErrVolumeIDRequired = errors.New("volumeID is required")
-
-// ErrVolumeInfoRequired occurs when an RPC call is made with a nil
-// volumeI argument.
-var ErrVolumeInfoRequired = errors.New("volumeInfo is required")
-
-// ErrVolumeCapabilityRequired occurs when an RPC call is made with
-// a nil volumeCapability argument.
-var ErrVolumeCapabilityRequired = errors.New("volumeCapability is required")
-
-// ErrInvalidTargetPath occurs when an RPC call is made with
-// an invalid targetPath argument.
-var ErrInvalidTargetPath = errors.New("invalid targetPath")
-
 // ErrNilResult occurs when a gRPC call returns a nil Result.
 var ErrNilResult = errors.New("result is nil")
-
-// ErrInvalidProvider is returned from NewService if the
-// specified provider name is unknown.
-var ErrInvalidProvider = errors.New("invalid service provider")
 
 ////////////////////////////////////////////////////////////////////////////////
 //                             Controller Service                             //

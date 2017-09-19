@@ -20,7 +20,7 @@ type IdempotencyProvider interface {
 	// an empty string should be returned.
 	GetVolumeName(
 		ctx context.Context,
-		id *csi.VolumeID) (string, error)
+		volumeHandle *csi.VolumeHandle) (string, error)
 
 	// GetVolumeInfo should return information about the volume
 	// specified by the provided volume name. If the volume does not
@@ -33,13 +33,13 @@ type IdempotencyProvider interface {
 	// the volume specified by the provided volume name or ID.
 	IsControllerPublished(
 		ctx context.Context,
-		id *csi.VolumeID) (*csi.PublishVolumeInfo, error)
+		volumeHandle *csi.VolumeHandle) (*csi.PublishVolumeInfo, error)
 
 	// IsNodePublished should return a flag indicating whether or
 	// not the volume exists and is published on the current host.
 	IsNodePublished(
 		ctx context.Context,
-		id *csi.VolumeID,
+		volumeHandle *csi.VolumeHandle,
 		pubVolInfo *csi.PublishVolumeInfo,
 		targetPath string) (bool, error)
 }
@@ -123,7 +123,7 @@ func (i *idempotencyInterceptor) controllerPublishVolume(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (res interface{}, resErr error) {
 
-	name, err := i.p.GetVolumeName(ctx, req.VolumeId)
+	name, err := i.p.GetVolumeName(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +164,7 @@ func (i *idempotencyInterceptor) controllerPublishVolume(
 		return handler(ctx, req)
 	}
 
-	pubInfo, err := i.p.IsControllerPublished(ctx, req.VolumeId)
+	pubInfo, err := i.p.IsControllerPublished(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +188,7 @@ func (i *idempotencyInterceptor) controllerUnpublishVolume(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (res interface{}, resErr error) {
 
-	name, err := i.p.GetVolumeName(ctx, req.VolumeId)
+	name, err := i.p.GetVolumeName(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +229,7 @@ func (i *idempotencyInterceptor) controllerUnpublishVolume(
 		return handler(ctx, req)
 	}
 
-	pubInfo, err := i.p.IsControllerPublished(ctx, req.VolumeId)
+	pubInfo, err := i.p.IsControllerPublished(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func (i *idempotencyInterceptor) deleteVolume(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (res interface{}, resErr error) {
 
-	name, err := i.p.GetVolumeName(ctx, req.VolumeId)
+	name, err := i.p.GetVolumeName(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +371,7 @@ func (i *idempotencyInterceptor) nodePublishVolume(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (res interface{}, resErr error) {
 
-	name, err := i.p.GetVolumeName(ctx, req.VolumeId)
+	name, err := i.p.GetVolumeName(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -413,7 +413,7 @@ func (i *idempotencyInterceptor) nodePublishVolume(
 	}
 
 	ok, err := i.p.IsNodePublished(
-		ctx, req.VolumeId, req.PublishVolumeInfo, req.TargetPath)
+		ctx, req.VolumeHandle, req.PublishVolumeInfo, req.TargetPath)
 	if err != nil {
 		return nil, err
 	}
@@ -435,7 +435,7 @@ func (i *idempotencyInterceptor) nodeUnpublishVolume(
 	info *grpc.UnaryServerInfo,
 	handler grpc.UnaryHandler) (res interface{}, resErr error) {
 
-	name, err := i.p.GetVolumeName(ctx, req.VolumeId)
+	name, err := i.p.GetVolumeName(ctx, req.VolumeHandle)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +476,8 @@ func (i *idempotencyInterceptor) nodeUnpublishVolume(
 		return handler(ctx, req)
 	}
 
-	ok, err := i.p.IsNodePublished(ctx, req.VolumeId, nil, req.TargetPath)
+	ok, err := i.p.IsNodePublished(
+		ctx, req.VolumeHandle, nil, req.TargetPath)
 	if err != nil {
 		return nil, err
 	}
